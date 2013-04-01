@@ -29,6 +29,9 @@ module Safe = struct
   let re_exec re s =
     safe (fun () -> Re.get_all (Re.exec re s))
 
+  let re_exec_of re s =
+    safe (fun () -> Re.get_all_ofs (Re.exec re s))
+
   let map_get k db =
     safe (fun () -> String_map.find k db)
 
@@ -43,7 +46,22 @@ module Safe = struct
 end
 
 module Word = struct
-  let take s = Safe.lsplit2 ~on:' ' s
+  let rec nth n s =
+    match n with
+      | n when n < 1 ->
+	None
+      | 1 -> begin
+	match Safe.lsplit2 ~on:' ' s with
+	  | Some (word, _) -> Some word
+	  | None           -> Some s
+      end
+      | _ -> begin
+	match Safe.lsplit2 ~on:' ' s with
+	  | Some (_, rest) ->
+	    nth (n - 1) rest
+	  | None ->
+	    None
+      end
 
   let rec drop n s =
     match n with
@@ -52,7 +70,7 @@ module Word = struct
       | 1 ->
 	Some s
       | n -> begin
-	match take s with
+	match Safe.lsplit2 ~on:' ' s with
 	  | Some (_, rest) ->
 	    drop (n - 1) rest
 	  | None ->
@@ -110,7 +128,7 @@ let make_set_factoid_re nick =
        ; Re.no_case (Re.str nick)
        ; Re.alt [Re.char ':'; Re.char ';'; Re.char ','; Re.char ' ']
        ; Re.rep Re.space
-       ; Re.group (Re.rep1 (Re.alt [Re.alpha; Re.punct]))
+       ; Re.group (Re.rep1 (Re.alt [Re.alnum; Re.punct]))
        ; Re.rep1 Re.space
        ; Re.group (Re.alt [Re.str "is reply"; Re.str "is"])
        ; Re.rep1 Re.space
@@ -124,11 +142,10 @@ let make_get_factoid_re nick =
        ; Re.no_case (Re.str nick)
        ; Re.alt [Re.char ':'; Re.char ';'; Re.char ','; Re.char ' ']
        ; Re.rep Re.space
-       ; Re.group (Re.rep1 (Re.alt [Re.alpha; Re.punct]))
+       ; Re.group (Re.rep1 (Re.alt [Re.alnum; Re.punct]))
        ; Re.rep Re.space
        ; Re.group (Re.rep Re.any)
        ])
-
 
 let set_factoid factoid value t =
   let t = { t with db = String_map.add factoid value t.db } in
@@ -168,12 +185,49 @@ let update_nick nick t =
   ; get_factoid = make_get_factoid_re nick
   }
 
-let get_factoid factoid args db =
-  match Safe.map_get factoid db with
-    | Some v ->
-      Some v
+let var_re =
+  Re.compile
+    (Re.seq
+       [ Re.char '{'
+       ; Re.seq [Re.group (Re.rep1 Re.digit); Re.group (Re.opt (Re.char '-'))]
+       ; Re.char '}'
+       ])
+
+let replace s e str n =
+  String.sub str 0 s ^
+    n ^
+    String.sub str (e + 1) (String.length str - e - 1)
+
+let rec replace_vars v args =
+  let rpl ts te = function
+    | Some w ->
+      replace_vars (replace ts (te - 1) v w) args
     | None ->
-      None
+      v
+  in
+  match Safe.re_exec_of var_re v with
+    | Some [| (ts, te); (ws, we); (ms, me) |] when ms = me ->
+      (* When there is no '-' *)
+      let w_pos = int_of_string (String.sub v ws (we - ws)) in
+      rpl ts te (Word.nth w_pos args)
+    | Some [| (ts, te); (ws, we); _ |] ->
+      let w_pos = int_of_string (String.sub v ws (we - ws)) in
+      rpl ts te (Word.drop w_pos args)
+    | Some _ ->
+      v
+    | None ->
+      v
+
+let get_factoid factoid args db =
+  if Safe.re_exec var_re args = None then begin
+    match Safe.map_get factoid db with
+      | Some v ->
+	Some (replace_vars v args)
+      | None ->
+	None
+  end
+  else
+    None
 
 let rec loop t =
   match Safe.input_line t.in_chan with
