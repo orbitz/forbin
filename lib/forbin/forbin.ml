@@ -148,6 +148,7 @@ let make_get_factoid_re nick =
        ])
 
 let set_factoid factoid value t =
+  let factoid = String.lowercase factoid in
   let t = { t with db = String_map.add factoid value t.db } in
   Db.write_db t.db t.db_path;
   t
@@ -220,7 +221,7 @@ let rec replace_vars v args =
 
 let get_factoid factoid args db =
   if Safe.re_exec var_re args = None then begin
-    match Safe.map_get factoid db with
+    match Safe.map_get (String.lowercase factoid) db with
       | Some v ->
 	Some (replace_vars v args)
       | None ->
