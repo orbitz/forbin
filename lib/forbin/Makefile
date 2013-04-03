@@ -1,5 +1,5 @@
 CAMLP4=
-OCAMLC_OPTS=-package unix,re
+OCAMLC_OPTS=-package unix,re,losic
 OCAMLOPT_OPTS=$(OCAMLC_OPTS)
 
 LIB_MODULES=
