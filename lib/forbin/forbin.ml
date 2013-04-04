@@ -1,3 +1,11 @@
+module String_ext = Losic.String_ext
+
+module Ctl_writer = Losic.Ctl_writer
+
+module Cb = Losic.Ctl_builder
+module Om = Losic.Out_message
+module Cm = Losic.Ctl_message
+
 module String_map = Map.Make(String)
 
 module Safe = struct
@@ -30,12 +38,12 @@ module Word = struct
       | n when n < 1 ->
 	None
       | 1 -> begin
-	match Losic.String_ext.lsplit2 ~on:' ' s with
+	match String_ext.lsplit2 ~on:' ' s with
 	  | Some (word, _) -> Some word
 	  | None           -> Some s
       end
       | _ -> begin
-	match Losic.String_ext.lsplit2 ~on:' ' s with
+	match String_ext.lsplit2 ~on:' ' s with
 	  | Some (_, rest) ->
 	    nth (n - 1) rest
 	  | None ->
@@ -49,7 +57,7 @@ module Word = struct
       | 1 ->
 	Some s
       | n -> begin
-	match Losic.String_ext.lsplit2 ~on:' ' s with
+	match String_ext.lsplit2 ~on:' ' s with
 	  | Some (_, rest) ->
 	    drop (n - 1) rest
 	  | None ->
@@ -57,19 +65,11 @@ module Word = struct
       end
 end
 
-module Ctl = struct
-  let cmd ctl c =
-    let module Cb = Losic.Ctl_builder in
-    let fout = open_out_gen [Open_append] 0o666 ctl in
-    output_string fout (Cb.build c);
-    close_out fout
-end
-
 module Db = struct
   let rec read_db in_chan db =
     match Safe.input_line in_chan with
       | Some l -> begin
-	match Losic.String_ext.lsplit2 ~on:'\t' l with
+	match String_ext.lsplit2 ~on:'\t' l with
 	  | Some (name, value) ->
 	    read_db
 	      in_chan
@@ -173,7 +173,7 @@ module Forbin = struct
   let rec replace_vars v args =
     let rpl ts te = function
       | Some w ->
-	replace_vars (Losic.String_ext.splice ts (te - 1) v w) args
+	replace_vars (String_ext.splice ts (te - 1) v w) args
       | None ->
 	v
     in
@@ -202,19 +202,16 @@ module Forbin = struct
       None
 
   let interpret_msg msg t =
-    let module Om = Losic.Out_message in
     let dst =
       if Om.Msg.is_to_channel msg then
 	Om.Msg.dst msg
       else
 	Om.Msg.src msg
     in
-    let module Om = Losic.Out_message in
-    let module Cm = Losic.Ctl_message in
     match parse_msg (Om.Msg.msg msg) t with
       | Some (`Set (factoid, value)) -> begin
 	let t = set_factoid factoid value t in
-	Ctl.cmd
+	Ctl_writer.write
 	  t.ctl
 	  (Cm.Message.Msg (Cm.Msg.create ~dst (factoid ^ " set")));
 	t
@@ -222,7 +219,7 @@ module Forbin = struct
       | Some (`Get (factoid, args)) -> begin
 	match get_factoid factoid args t.db with
 	  | Some resp -> begin
-	    Ctl.cmd
+	    Ctl_writer.write
 	      t.ctl
 	      (Cm.Message.Msg
 		 (Cm.Msg.create
@@ -237,8 +234,7 @@ module Forbin = struct
 	t
 
   let init () =
-    let module Cm = Losic.Ctl_message in
-    Ctl.cmd
+    Ctl_writer.write
       Sys.argv.(1)
       (Cm.Message.Whoami);
     { nick        = ""
@@ -252,7 +248,6 @@ module Forbin = struct
   let destroy _ = ()
 
   let handle m t =
-    let module Om = Losic.Out_message in
     match Om.message m with
       | Om.Message.Whoami nick ->
 	update_nick nick t
