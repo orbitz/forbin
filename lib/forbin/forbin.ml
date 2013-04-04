@@ -99,42 +99,7 @@ module Db = struct
     close_out fout
 end
 
-let make_set_factoid_re nick =
-  Re.compile
-    (Re.seq
-       [ Re.bol
-       ; Re.no_case (Re.str nick)
-       ; Re.alt [Re.char ':'; Re.char ';'; Re.char ','; Re.char ' ']
-       ; Re.rep Re.space
-       ; Re.group (Re.rep1 (Re.alt [Re.alnum; Re.punct]))
-       ; Re.rep1 Re.space
-       ; Re.group (Re.alt [Re.str "is reply"; Re.str "is"])
-       ; Re.rep1 Re.space
-       ; Re.group (Re.rep1 Re.any)
-       ])
-
-let make_get_factoid_re nick =
-  Re.compile
-    (Re.seq
-       [ Re.bol
-       ; Re.no_case (Re.str nick)
-       ; Re.alt [Re.char ':'; Re.char ';'; Re.char ','; Re.char ' ']
-       ; Re.rep Re.space
-       ; Re.group (Re.rep1 (Re.alt [Re.alnum; Re.punct]))
-       ; Re.rep Re.space
-       ; Re.group (Re.rep Re.any)
-       ])
-
-
-module Forbin = struct
-  type t = { nick        : string
-	   ; set_factoid : Re.re
-	   ; get_factoid : Re.re
-	   ; db          : string String_map.t
-	   ; db_path     : string
-	   ; ctl         : string
-	   }
-
+module Factoid = struct
   let var_re =
     Re.compile
       (Re.seq
@@ -143,32 +108,31 @@ module Forbin = struct
 	 ; Re.char '}'
 	 ])
 
-  let set_factoid factoid value t =
-    let factoid = String.lowercase factoid in
-    let t = { t with db = String_map.add factoid value t.db } in
-    Db.write_db t.db t.db_path;
-    t
+  let make_set_factoid_re nick =
+    Re.compile
+      (Re.seq
+	 [ Re.bol
+	 ; Re.no_case (Re.str nick)
+	 ; Re.alt [Re.char ':'; Re.char ';'; Re.char ','; Re.char ' ']
+	 ; Re.rep Re.space
+	 ; Re.group (Re.rep1 (Re.alt [Re.alnum; Re.punct]))
+	 ; Re.rep1 Re.space
+	 ; Re.group (Re.alt [Re.str "is reply"; Re.str "is"])
+	 ; Re.rep1 Re.space
+	 ; Re.group (Re.rep1 Re.any)
+	 ])
 
-  let parse_msg msg t =
-    match Safe.re_exec t.set_factoid msg with
-      | Some [| _; factoid; "is reply"; value |] ->
-	Some (`Set (factoid, value))
-      | Some [| _; factoid; "is"; value |] ->
-	Some (`Set (factoid, factoid ^ " is " ^ value))
-      | _ -> begin
-	match Safe.re_exec t.get_factoid msg with
-	  | Some [| _; factoid; args |] ->
-	    Some (`Get (factoid, args))
-	  | _ ->
-	    None
-      end
-
-  let update_nick nick t =
-    { t with
-      nick        = nick
-    ; set_factoid = make_set_factoid_re nick
-    ; get_factoid = make_get_factoid_re nick
-    }
+  let make_get_factoid_re nick =
+    Re.compile
+      (Re.seq
+	 [ Re.bol
+	 ; Re.no_case (Re.str nick)
+	 ; Re.alt [Re.char ':'; Re.char ';'; Re.char ','; Re.char ' ']
+	 ; Re.rep Re.space
+	 ; Re.group (Re.rep1 (Re.alt [Re.alnum; Re.punct]))
+	 ; Re.rep Re.space
+	 ; Re.group (Re.rep Re.any)
+	 ])
 
   let rec replace_vars v args =
     let rpl ts te = function
@@ -190,7 +154,11 @@ module Forbin = struct
       | None ->
 	v
 
-  let get_factoid factoid args db =
+  let add factoid value db =
+    let factoid = String.lowercase factoid in
+    String_map.add factoid value db
+
+  let get factoid args db =
     if Safe.re_exec var_re args = None then begin
       match Safe.map_get (String.lowercase factoid) db with
 	| Some v ->
@@ -200,6 +168,42 @@ module Forbin = struct
     end
     else
       None
+end
+
+module Forbin = struct
+  type t = { nick        : string
+	   ; set_factoid : Re.re
+	   ; get_factoid : Re.re
+	   ; db          : string String_map.t
+	   ; db_path     : string
+	   ; ctl         : string
+	   }
+
+  let update_nick nick t =
+    { t with
+      nick        = nick
+    ; set_factoid = Factoid.make_set_factoid_re nick
+    ; get_factoid = Factoid.make_get_factoid_re nick
+    }
+
+  let add_factoid factoid value t =
+    let t = { t with db = Factoid.add factoid value t.db } in
+    Db.write_db t.db t.db_path;
+    t
+
+  let parse_msg msg t =
+    match Safe.re_exec t.set_factoid msg with
+      | Some [| _; factoid; "is reply"; value |] ->
+	Some (`Set (factoid, value))
+      | Some [| _; factoid; "is"; value |] ->
+	Some (`Set (factoid, factoid ^ " is " ^ value))
+      | _ -> begin
+	match Safe.re_exec t.get_factoid msg with
+	  | Some [| _; factoid; args |] ->
+	    Some (`Get (factoid, args))
+	  | _ ->
+	    None
+      end
 
   let interpret_msg msg t =
     let dst =
@@ -210,14 +214,14 @@ module Forbin = struct
     in
     match parse_msg (Om.Msg.msg msg) t with
       | Some (`Set (factoid, value)) -> begin
-	let t = set_factoid factoid value t in
+	let t = add_factoid factoid value t in
 	Ctl_writer.write
 	  t.ctl
 	  (Cm.Message.Msg (Cm.Msg.create ~dst (factoid ^ " set")));
 	t
       end
       | Some (`Get (factoid, args)) -> begin
-	match get_factoid factoid args t.db with
+	match Factoid.get factoid args t.db with
 	  | Some resp -> begin
 	    Ctl_writer.write
 	      t.ctl
@@ -238,8 +242,8 @@ module Forbin = struct
       Sys.argv.(1)
       (Cm.Message.Whoami);
     { nick        = ""
-    ; set_factoid = make_set_factoid_re ""
-    ; get_factoid = make_get_factoid_re ""
+    ; set_factoid = Factoid.make_set_factoid_re ""
+    ; get_factoid = Factoid.make_get_factoid_re ""
     ; ctl         = Sys.argv.(1)
     ; db_path     = Sys.argv.(2)
     ; db          = Db.read_db_if_exists Sys.argv.(2)
