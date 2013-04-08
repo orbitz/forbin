@@ -129,6 +129,10 @@ module Factoid = struct
 	 ; Re.no_case (Re.str nick)
 	 ; Re.alt [Re.char ':'; Re.char ';'; Re.char ','; Re.char ' ']
 	 ; Re.rep Re.space
+	 ; Re.opt (Re.seq [ Re.group (Re.rep1 (Re.alt [Re.alnum; Re.punct]))
+			  ; Re.rep1 Re.space; Re.char '<'
+			  ])
+	 ; Re.rep1 Re.space
 	 ; Re.group (Re.rep1 (Re.alt [Re.alnum; Re.punct]))
 	 ; Re.rep Re.space
 	 ; Re.group (Re.rep Re.any)
@@ -199,13 +203,20 @@ module Forbin = struct
 	Some (`Set (factoid, factoid ^ " is " ^ value))
       | _ -> begin
 	match Safe.re_exec t.get_factoid msg with
-	  | Some [| _; factoid; args |] ->
-	    Some (`Get (factoid, args))
+	  | Some [| _; ""; factoid; args |] ->
+	    Some (`Get (None, factoid, args))
+	  | Some [| _; who; factoid; args |] ->
+	    Some (`Get (Some who, factoid, args))
 	  | _ ->
 	    None
       end
 
   let interpret_msg msg t =
+    let make_prefix who src =
+      match who with
+	| Some w -> w
+	| None   -> src
+    in
     let dst =
       if Om.Msg.is_to_channel msg then
 	Om.Msg.dst msg
@@ -220,7 +231,8 @@ module Forbin = struct
 	  (Cm.Message.Msg (Cm.Msg.create ~dst (factoid ^ " set")));
 	t
       end
-      | Some (`Get (factoid, args)) -> begin
+      | Some (`Get (who, factoid, args)) -> begin
+	let respond_to = make_prefix who (Om.Msg.src msg) in
 	match Factoid.get factoid args t.db with
 	  | Some resp -> begin
 	    Ctl_writer.write
@@ -228,7 +240,7 @@ module Forbin = struct
 	      (Cm.Message.Msg
 		 (Cm.Msg.create
 		    ~dst
-		    (Om.Msg.src msg ^ ", " ^ resp)));
+		    (respond_to ^ ", " ^ resp)));
 	    t
 	  end
 	  | None ->
